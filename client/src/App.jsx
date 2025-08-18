@@ -13,17 +13,21 @@ const nf2 = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 0, maximumFr
 const fmt2 = (n) => nf2.format(Number(n) || 0)
 const currency = (v) => `${fmt2(v)} рублей`
 
-// Нормализуем результат ставки
+// Нормализуем результат ставки (чистый профит)
 function normalizedWinValue(b){
   const win = Number(b.win_value) || 0
   const stake = Number(b.stake_value) || 0
+
+  // Проигрыш — это отрицательный результат (обычно -stake)
   if (b.status === STATUS.LOST){
     return win < 0 ? win : (stake ? -stake : 0)
   }
+  // Нерасчитана — профит 0
   if (b.status === STATUS.PENDING){
     return 0
   }
-  return win
+  // Выигрыш — чистый профит = выплата - ставка
+  return (win - stake)
 }
 
 // =====================
@@ -517,7 +521,7 @@ function AdminPage(){
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
             <div className="bg-white/5 rounded-2xl p-4 ring-1 ring-white/10">
               <div className="text-sm opacity-80 mb-2">Редактор JSON</div>
-              <textarea className="w-full h-[420px] bg-black/40 rounded-xl p-3 font-mono text-sm outline-none" value={jsonText} onChange={(e)=>setJsonText(e.target.value)} spellCheck={false} placeholder='Вставьте сюда объект {"…"} для "Добавить ставку" или "Сохранить изменения"' />
+              <textarea className="w-full h=[420px] bg-black/40 rounded-xl p-3 font-mono text-sm outline-none" value={jsonText} onChange={(e)=>setJsonText(e.target.value)} spellCheck={false} />
               {error && <div className="text-rose-400 text-sm mt-2">{error}</div>}
               <div className="flex flex-wrap gap-3 mt-3">
                 <button onClick={addOne} className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 font-medium">Добавить ставку</button>
