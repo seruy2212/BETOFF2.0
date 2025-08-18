@@ -1,0 +1,14 @@
+[Unit]
+Description=BETOFF API + static client (Node.js)
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/betoff
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node server/server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

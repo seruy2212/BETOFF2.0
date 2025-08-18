@@ -1,0 +1,26 @@
+[
+  {
+    "time": "10 августа 2025 г. в 16:05",
+    "id": "153373230",
+    "match": "B8 – MOUZ",
+    "bet": "Карта 2. Тотал – Меньше 21.5",
+    "status": "Проиграна",
+    "stake_value": 200,
+    "stake_currency": "RUB",
+    "coef": 1.46,
+    "win_value": "",
+    "win_currency": ""
+  },
+  {
+    "time": "10 августа 2025 г. в 16:08",
+    "id": "153373633",
+    "match": "B8 – MOUZ",
+    "bet": "Карта 2. Фора – B8 6.5",
+    "status": "Выиграна",
+    "stake_value": 200,
+    "stake_currency": "RUB",
+    "coef": 1.56,
+    "win_value": 312,
+    "win_currency": "RUB"
+  }
+]

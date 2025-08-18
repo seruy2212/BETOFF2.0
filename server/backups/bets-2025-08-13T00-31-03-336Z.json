@@ -1,0 +1,74 @@
+[
+  {
+    "time": "7 августа 2025 г. в 20:59",
+    "id": "152895055",
+    "match": "СОФЕЯ ПИСЬКА",
+    "bet": "Карта 3. Фора – paiN 2.5",
+    "status": "Выиграна",
+    "stake_value": 220,
+    "stake_currency": "RUB",
+    "coef": 1.31,
+    "win_value": 288.2,
+    "win_currency": "RUB"
+  },
+  {
+    "time": "7 августа 2025 г. в 22:36",
+    "id": "152912528",
+    "match": "Fnatic – Legacy",
+    "bet": "Карта 2. Тотал – Больше 20.5",
+    "status": "Выиграна",
+    "stake_value": 215,
+    "stake_currency": "RUB",
+    "coef": 1.36,
+    "win_value": 292.4,
+    "win_currency": "RUB"
+  },
+  {
+    "time": "8 августа 2025 г. в 14:12",
+    "id": "152999555",
+    "match": "ENCE – The MongolZ",
+    "bet": "Карта 3. Фора – The MongolZ 2.5",
+    "status": "Выиграна",
+    "stake_value": 200,
+    "stake_currency": "RUB",
+    "coef": 1.54,
+    "win_value": 308,
+    "win_currency": "RUB"
+  },
+  {
+    "time": "8 августа 2025 г. в 14:14",
+    "id": "152999719",
+    "match": "ENCE – The MongolZ",
+    "bet": "Победитель – The MongolZ",
+    "status": "Выиграна",
+    "stake_value": 250,
+    "stake_currency": "RUB",
+    "coef": 1.9,
+    "win_value": 475,
+    "win_currency": "RUB"
+  },
+  {
+    "time": "10 августа 2025 г. в 16:05",
+    "id": "153373230",
+    "match": "B8 – MOUZ",
+    "bet": "Карта 2. Тотал – Меньше 21.5",
+    "status": "Проиграна",
+    "stake_value": 200,
+    "stake_currency": "RUB",
+    "coef": 1.46,
+    "win_value": "",
+    "win_currency": ""
+  },
+  {
+    "time": "10 августа 2025 г. в 16:08",
+    "id": "153373633",
+    "match": "B8 – MOUZ",
+    "bet": "Карта 2. Фора – B8 6.5",
+    "status": "Выиграна",
+    "stake_value": 200,
+    "stake_currency": "RUB",
+    "coef": 1.56,
+    "win_value": 312,
+    "win_currency": "RUB"
+  }
+]
