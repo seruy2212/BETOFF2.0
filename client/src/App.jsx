@@ -12,13 +12,8 @@ const statusColor = (s) => s===STATUS.WON? 'bg-emerald-600' : s===STATUS.LOST? '
 const nf2 = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 const fmt2 = (n) => nf2.format(Number(n) || 0)
 
-// Хелперы валют
-const getRubRate = () => {
-  try {
-    const v = Number(localStorage.getItem('betoff_rub_rate'))
-    return v > 0 ? v : 80.78
-  } catch { return 80.78 }
-}
+// Валютные хелперы
+const DEFAULT_RUB_RATE = 80.78
 const fmtAmount = (v, unit='USDT') => `${fmt2(v)} ${unit}`
 const betUnit = (b) => (b.stake_currency || b.win_currency || 'USDT')
 
@@ -27,21 +22,19 @@ function normalizedWinValue(b){
   const win = Number(b.win_value) || 0
   const stake = Number(b.stake_value) || 0
 
-  // Проигрыш — это отрицательный результат (обычно -stake)
   if (b.status === STATUS.LOST){
     return win < 0 ? win : (stake ? -stake : 0)
   }
-  // Нерасчитана — профит 0
   if (b.status === STATUS.PENDING){
     return 0
   }
-  // Выигрыш — чистый профит = выплата - ставка
   return (win - stake)
 }
 
+// Перевод суммы результата в USDT исходя из валюты ставки
 const toUSDT = (amount, b, rubRate) => {
   const unit = betUnit(b)
-  if (unit === 'RUB') return amount / (Number(rubRate) || 80.78)
+  if (unit === 'RUB') return amount / (Number(rubRate) || DEFAULT_RUB_RATE)
   return amount
 }
 
@@ -72,7 +65,6 @@ async function fetchBets(){
   return await r.json()
 }
 
-// получить серверный штамп последнего обновления (независимо от браузера)
 async function fetchMeta(){
   try{
     const r = await fetch('/api/meta')
@@ -80,6 +72,16 @@ async function fetchMeta(){
     const j = await r.json()
     return Number(j.updatedAt)||0
   }catch{ return 0 }
+}
+
+async function fetchRate(){
+  try{
+    const r = await fetch('/api/rate')
+    if(!r.ok) return DEFAULT_RUB_RATE
+    const j = await r.json()
+    const val = Number(j?.rubPerUsdt)
+    return Number.isFinite(val) && val>0 ? val : DEFAULT_RUB_RATE
+  }catch{ return DEFAULT_RUB_RATE }
 }
 
 function useRealtimeBets(){
@@ -92,7 +94,6 @@ function useRealtimeBets(){
 
   useEffect(()=>{
     let mounted = true
-    // первичная загрузка: тянем список и серверный updatedAt
     fetchBets().then(d=> { if(mounted) setBets(d) })
     fetchMeta().then(ts=> { if(mounted && ts) setLastEventAt(ts) })
 
@@ -100,7 +101,6 @@ function useRealtimeBets(){
     socket.on('connect', ()=> setConnected(true))
     socket.on('disconnect', ()=> setConnected(false))
 
-    // поддержка старого и нового формата события
     socket.on('bets:update', (payload)=>{
       if(Array.isArray(payload)){
         setBets(payload)
@@ -121,16 +121,14 @@ function useRealtimeBets(){
   return { bets, setBets, connected, lastEventAt }
 }
 
-// === Статы (в USDT): исключаем НЕРАСЧИТАННЫЕ из винрейта и профита ===
+// === Статы (в USDT)
 function calcStats(bets, rubRate){
   const eligible = bets.filter(b => b.status !== STATUS.PENDING)
   const total = eligible.length
   const won = eligible.filter(b=>b.status===STATUS.WON).length
   const winRate = total? Math.round(won/total*100):0
 
-  // Профит агрегируем в USDT: RUB-конверсия через RESULT / КУРС
   const profitUSDT = eligible.reduce((a,b)=> a + toUSDT(normalizedWinValue(b), b, rubRate), 0)
-  // Ставки тоже в USDT для корректного ROI
   const sumStakesUSDT = eligible.reduce((a,b)=> a + toUSDT(Number(b.stake_value)||0, b, rubRate), 0)
 
   const roi = sumStakesUSDT? ((profitUSDT / sumStakesUSDT) * 100).toFixed(1) : '0.0'
@@ -138,7 +136,7 @@ function calcStats(bets, rubRate){
   return { total, winRate, profitUSDT, avgOdds, roi }
 }
 
-// === Серия: ищем первую НЕ нерасчитанную и считаем подряд ===
+// === Серия
 function calcStreak(all){
   const slice = all.slice(0, 15)
   const firstIdx = slice.findIndex(b => b.status !== STATUS.PENDING)
@@ -155,33 +153,30 @@ function calcStreak(all){
 }
 
 // =====================
-// Mobile Home — horizontal scrollable top metrics (Winrate/Profit/Streak)
+// Mobile Home — metrics and list
 // =====================
 function MobileHome(){
   const { bets, connected, lastEventAt } = useRealtimeBets()
   const [limit, setLimit] = useState(20)
   const [flash, setFlash] = useState(false)
   const [highlightId, setHighlightId] = useState('')
-  const [rubRate, setRubRate] = useState(getRubRate)
-  const [profitCurrency, setProfitCurrency] = useState('USDT') // 'USDT' | 'RUB'
   const listRef = useRef(null)
   const prevFirstId = useRef('')
 
-  // summary carousel state
-  const scrollerRef = useRef(null)
+  // курс и валюта отображения профита
+  const [rubRate, setRubRate] = useState(DEFAULT_RUB_RATE)
+  const [profitCurrency, setProfitCurrency] = useState('USDT') // 'USDT' | 'RUB'
 
-  // слушаем изменение курса (если поменяли в админке)
+  // сокет для курса
   useEffect(()=>{
-    const onStorage = (e) => {
-      if(e.key === 'betoff_rub_rate') setRubRate(getRubRate())
-    }
-    const onCustom = () => setRubRate(getRubRate())
-    window.addEventListener('storage', onStorage)
-    window.addEventListener('betoff_rub_rate_changed', onCustom)
-    return () => {
-      window.removeEventListener('storage', onStorage)
-      window.removeEventListener('betoff_rub_rate_changed', onCustom)
-    }
+    let mounted = true
+    fetchRate().then(v => { if(mounted) setRubRate(v) })
+    const socket = io('/', { path: '/socket.io' })
+    socket.on('rate:update', (data)=>{
+      const val = Number(data?.rubPerUsdt)
+      if(Number.isFinite(val) && val>0) setRubRate(val)
+    })
+    return ()=> socket.disconnect()
   },[])
 
   // короткая вспышка при любом апдейте + подсветка и автоскролл при добавлении новой первой
@@ -217,10 +212,10 @@ function MobileHome(){
     try{ return new Date(Number(lastEventAt)).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }) }catch{ return 'недавно' }
   }, [lastEventAt])
 
-  // Профит для отображения в выбранной валюте
+  // Профит для отображения
   const profitDisplay = profitCurrency === 'USDT'
     ? stats15.profitUSDT
-    : stats15.profitUSDT * (Number(rubRate)||80.78)
+    : stats15.profitUSDT * (Number(rubRate)||DEFAULT_RUB_RATE)
 
   const onToggleProfitCurrency = () => {
     setProfitCurrency(c => c === 'USDT' ? 'RUB' : 'USDT')
@@ -235,7 +230,7 @@ function MobileHome(){
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white flex flex-col">
-      {/* Branding + LIVE индикатор + дата обновления (сохраняется) */}
+      {/* Branding */}
       <div className="px-4 pt-4 pb-2">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -255,7 +250,6 @@ function MobileHome(){
             className="text-xs px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 whitespace-nowrap"
           >t.me/betoff7</a>
         </div>
-        {/* бегущая линия под шапкой */}
         <motion.div
           className="mt-3 h-[2px] bg-gradient-to-r from-emerald-400/0 via-emerald-400/80 to-emerald-400/0"
           animate={{ x: [ '-100%', '100%' ] }}
@@ -270,7 +264,7 @@ function MobileHome(){
           animate={flash? { scale: [1, 1.02, 1] } : {}}
           transition={{ duration: 0.6 }}
         >
-          <div ref={scrollerRef} className="no-scrollbar overflow-x-auto snap-x snap-mandatory">
+          <div className="no-scrollbar overflow-x-auto snap-x snap-mandatory">
             <div className="flex gap-3 px-3">
               {metricCards.map((c)=> (
                 <div key={c.key} className="shrink-0 snap-center">
@@ -294,7 +288,7 @@ function MobileHome(){
         )}
       </AnimatePresence>
 
-      {/* List (newest first) + highlight for newest */}
+      {/* List (newest first) */}
       <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
         {visible.map(b=> <BetCard key={b.id} bet={b} highlight={highlightId===b.id} />)}
         {visible.length < bets.length && (
@@ -325,7 +319,6 @@ function SummaryCard({ title, subtitle, value, tone='neutral', onClick }){
       ? 'ring-rose-500/40 bg-rose-500/10'
       : 'ring-white/10 bg-white/5'
 
-  // Карточка контентной ширины (минимум 140px)
   return (
     <button
       type="button"
@@ -335,7 +328,6 @@ function SummaryCard({ title, subtitle, value, tone='neutral', onClick }){
       <div className="text-[11px] font-semibold leading-tight">{title}</div>
       <div className="text-[9px] uppercase tracking-wide text-white/70 leading-tight">{subtitle}</div>
       <div className="text-lg font-semibold mt-1 whitespace-nowrap">{value}</div>
-      {onClick && <div className="text-[9px] mt-1 opacity-70">тап для смены валюты</div>}
     </button>
   )
 }
@@ -355,7 +347,7 @@ function BetCard({ bet, highlight=false }){
       animate={highlight? { boxShadow: ['0 0 0 0 rgba(255,255,255,0.0)','0 0 0 8px rgba(255,255,255,0.25)','0 0 0 0 rgba(255,255,255,0.0)'] } : {}}
       transition={highlight? { duration: 2.2, ease: 'easeInOut' } : {}}
     >
-      {/* Свернуто (без текста статуса) */}
+      {/* Свернуто */}
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="font-semibold truncate text-[15px]">{bet.match}</div>
@@ -367,7 +359,7 @@ function BetCard({ bet, highlight=false }){
         </div>
       </div>
 
-      {/* Раскрыто (здесь уже показываем статус) */}
+      {/* Раскрыто */}
       <AnimatePresence initial={false}>
         {open && (
           <motion.div key="x" initial={{height:0, opacity:0}} animate={{height:'auto', opacity:1}} exit={{height:0, opacity:0}} transition={{duration:0.2}} className="overflow-hidden">
@@ -396,13 +388,13 @@ function Detail({ label, value }){
 }
 
 // =====================
-// Admin page — persistent auth + quick status + bulk JSON import + RUB rate editor
+// Admin page — auth + quick status + bulk JSON import + RUB rate editor
 // =====================
 function AdminPage(){
   const [password, setPassword] = useState('')
   const [authed, setAuthed] = useState(false)
   const [bets, setBets] = useState([])
-  const [jsonText, setJsonText] = useState('') // пусто по умолчанию
+  const [jsonText, setJsonText] = useState('')
   const [error, setError] = useState('')
   const [editingId, setEditingId] = useState('')
 
@@ -410,8 +402,8 @@ function AdminPage(){
   const [importItems, setImportItems] = useState([])
   const [importInfo, setImportInfo] = useState('')
 
-  // RUB rate editor
-  const [rubRateInput, setRubRateInput] = useState(() => String(getRubRate()))
+  // rate editor
+  const [rubRateInput, setRubRateInput] = useState('')
   const [rateInfo, setRateInfo] = useState('')
 
   // автологин из localStorage с проверкой пароля на сервере
@@ -426,7 +418,11 @@ function AdminPage(){
       .catch(()=>{})
   },[])
 
-  useEffect(()=>{ fetch('/api/bets').then(r=>r.json()).then(d=>{ setBets(d) }) },[])
+  // загрузка ставок и курса
+  useEffect(()=>{
+    fetch('/api/bets').then(r=>r.json()).then(d=>{ setBets(d) })
+    fetchRate().then(v => setRubRateInput(String(v)))
+  },[])
   const headers = useMemo(()=> authed? { 'Content-Type':'application/json', 'x-admin-password': password }: {}, [authed, password])
 
   const login = async (e)=>{
@@ -457,7 +453,6 @@ function AdminPage(){
   const del = async (id)=>{
     const r = await fetch(`/api/bets/${id}`, { method:'DELETE', headers })
     if(!r.ok){ setError('Ошибка авторизации'); return }
-    // оптимистично обновим список локально (чтобы не было «тёмного» состояния при задержке сокета)
     setBets(prev => prev.filter(x => String(x.id) !== String(id)))
   }
   const loadToEditor = (b)=>{
@@ -474,17 +469,18 @@ function AdminPage(){
     }catch(e){ setError(e.message) }
   }
 
-  // Быстрые кнопки смены статуса с автоподстановкой win_value
+  // Быстрая смена статуса
   const quickStatus = async (b, to) => {
     const stake = Number(b.stake_value)||0
     const coef = Number(b.coef)||0
     let patch = {}
+    const currency = b.win_currency || b.stake_currency || 'USDT'
     if (to === STATUS.WON){
-      patch = { status: STATUS.WON, win_value: Math.round(stake * coef), win_currency: b.win_currency || b.stake_currency || 'USDT' }
+      patch = { status: STATUS.WON, win_value: Math.round(stake * coef), win_currency: currency }
     } else if (to === STATUS.LOST){
-      patch = { status: STATUS.LOST, win_value: -Math.abs(stake), win_currency: b.win_currency || b.stake_currency || 'USDT' }
+      patch = { status: STATUS.LOST, win_value: -Math.abs(stake), win_currency: currency }
     } else {
-      patch = { status: STATUS.PENDING, win_value: 0, win_currency: b.win_currency || b.stake_currency || 'USDT' }
+      patch = { status: STATUS.PENDING, win_value: 0, win_currency: currency }
     }
     if(!b.stake_currency) patch.stake_currency = 'USDT'
     const r = await fetch(`/api/bets/${b.id}`, { method:'PATCH', headers, body: JSON.stringify(patch) })
@@ -536,7 +532,6 @@ function AdminPage(){
 
   const importAddMerge = async ()=>{
     if(!importItems.length){ setImportInfo('Сначала выберите JSON-файл'); return }
-    // получаем текущий список, добавляем импорт сверху (сохраняем порядок файла)
     const current = await fetch('/api/bets').then(r=>r.json())
     const merged = [...importItems.slice().reverse(), ...current]
     const r = await fetch('/api/bets', { method:'PUT', headers, body: JSON.stringify(merged) })
@@ -555,20 +550,22 @@ function AdminPage(){
     return ()=> socket.disconnect()
   },[editingId])
 
-  const saveRubRate = ()=>{
+  const saveRubRate = async ()=>{
     const val = Number(rubRateInput)
     if(!isFinite(val) || val <= 0){
       setRateInfo('Введите корректный курс (> 0)')
       return
     }
     try{
-      localStorage.setItem('betoff_rub_rate', String(val))
+      const r = await fetch('/api/rate', { method:'PUT', headers, body: JSON.stringify({ rubPerUsdt: val }) })
+      if(!r.ok){
+        setRateInfo('Ошибка сохранения курса (проверь пароль)')
+        return
+      }
       setRateInfo('Курс сохранён')
-      // уведомим другие части SPA
-      window.dispatchEvent(new Event('betoff_rub_rate_changed'))
       setTimeout(()=> setRateInfo(''), 1500)
     }catch{
-      setRateInfo('Не удалось сохранить курс')
+      setRateInfo('Сеть недоступна')
     }
   }
 
@@ -587,7 +584,7 @@ function AdminPage(){
           <div className="mt-4">
             <div className="bg-white/5 rounded-2xl p-4 ring-1 ring-white/10 max-w-sm">
               <div className="text-sm font-semibold">Курс RUB/USDT</div>
-              <div className="text-xs opacity-80 mt-1">Используется для конвертации профита RUB → USDT и отображения профита в RUB</div>
+              <div className="text-xs opacity-80 mt-1">Используется для конвертации профита RUB → USDT и для отображения профита в RUB</div>
               <div className="mt-3 flex items-center gap-2">
                 <span className="text-sm whitespace-nowrap">1 USDT =</span>
                 <input
