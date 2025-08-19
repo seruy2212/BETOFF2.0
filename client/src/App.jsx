@@ -16,6 +16,7 @@ const fmt2 = (n) => nf2.format(Number(n) || 0)
 const DEFAULT_RUB_RATE = 80.78
 const fmtAmount = (v, unit='USDT') => `${fmt2(v)} ${unit}`
 const betUnit = (b) => (b.stake_currency || b.win_currency || 'USDT')
+const round2 = (n) => Math.round((Number(n)||0) * 100) / 100
 
 // Нормализуем результат ставки (чистый профит)
 function normalizedWinValue(b){
@@ -121,6 +122,40 @@ function useRealtimeBets(){
   return { bets, setBets, connected, lastEventAt }
 }
 
+// === Диапазон метрик: используем только added_date (ДД/ММ/ГГГГ) ===
+function pad2(n){ return String(n).padStart(2,'0') }
+function todayDMY(){
+  const now = new Date()
+  return `${pad2(now.getDate())}/${pad2(now.getMonth()+1)}/${now.getFullYear()}`
+}
+function parseDMYtoMs(dmy){
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(String(dmy||'').trim())
+  if(!m) return NaN
+  const d = Number(m[1]), mo = Number(m[2]), y = Number(m[3])
+  const dt = new Date(y, mo-1, d)
+  if (dt.getFullYear()!==y || (dt.getMonth()+1)!==mo || dt.getDate()!==d) return NaN
+  return dt.getTime()
+}
+function startOfDayMs(ms){
+  const d = new Date(ms)
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+}
+function filterBetsByRangeAddedDate(bets, range){
+  const todayStr = todayDMY()
+  if (range === 'TODAY'){
+    // Только те, у кого added_date равна сегодняшней дате
+    return bets.filter(b => (b.added_date||'').trim() === todayStr)
+  }
+  // WEEK: сегодня и 6 предыдущих дней по added_date
+  const todayMs = startOfDayMs(Date.now())
+  const startMs = todayMs - 6*24*60*60*1000
+  const endMs = todayMs + 24*60*60*1000 - 1
+  return bets.filter(b => {
+    const t = parseDMYtoMs(b.added_date)
+    return Number.isFinite(t) && t >= startMs && t <= endMs
+  })
+}
+
 // === Статы (в USDT)
 function calcStats(bets, rubRate){
   const eligible = bets.filter(b => b.status !== STATUS.PENDING)
@@ -136,15 +171,15 @@ function calcStats(bets, rubRate){
   return { total, winRate, profitUSDT, avgOdds, roi }
 }
 
-// === Серия
-function calcStreak(all){
-  const slice = all.slice(0, 15)
-  const firstIdx = slice.findIndex(b => b.status !== STATUS.PENDING)
+// === Серия (в рамках выбранного диапазона)
+function calcStreak(list){
+  if (!list.length) return { kind: 'нет', count: 0 }
+  const firstIdx = list.findIndex(b => b.status !== STATUS.PENDING)
   if (firstIdx === -1) return { kind: 'нет', count: 0 }
-  const target = slice[firstIdx].status
+  const target = list[firstIdx].status
   let count = 0
-  for (let i = firstIdx; i < slice.length; i++){
-    const b = slice[i]
+  for (let i = firstIdx; i < list.length; i++){
+    const b = list[i]
     if (b.status === STATUS.PENDING) continue
     if (b.status !== target) break
     count++
@@ -166,6 +201,9 @@ function MobileHome(){
   // курс и валюта отображения профита
   const [rubRate, setRubRate] = useState(DEFAULT_RUB_RATE)
   const [profitCurrency, setProfitCurrency] = useState('USDT') // 'USDT' | 'RUB'
+
+  // диапазон метрик: WEEK (дефолт) / TODAY (по тапу на Винрейт)
+  const [metricsRange, setMetricsRange] = useState('WEEK') // 'WEEK' | 'TODAY'
 
   // сокет для курса
   useEffect(()=>{
@@ -195,14 +233,14 @@ function MobileHome(){
     return ()=> clearTimeout(t)
   }, [lastEventAt])
 
-  // вычисления
-  const last15 = useMemo(()=> bets.slice(0, 15), [bets])
-  const stats15 = useMemo(()=> calcStats(last15, rubRate), [last15, rubRate])
-  const streak = useMemo(()=> calcStreak(bets), [bets])
+  // вычисления по added_date
+  const filtered = useMemo(()=> filterBetsByRangeAddedDate(bets, metricsRange), [bets, metricsRange])
+  const stats = useMemo(()=> calcStats(filtered, rubRate), [filtered, rubRate])
+  const streak = useMemo(()=> calcStreak(filtered), [filtered])
   const visible = useMemo(()=> bets.slice(0, limit), [bets, limit])
 
-  const winrateTone = stats15.winRate > 50 ? 'green' : 'red'
-  const profitTone = stats15.profitUSDT > 0 ? 'green' : (stats15.profitUSDT < 0 ? 'red' : 'neutral')
+  const winrateTone = stats.winRate > 50 ? 'green' : 'red'
+  const profitTone = stats.profitUSDT > 0 ? 'green' : (stats.profitUSDT < 0 ? 'red' : 'neutral')
 
   const dateLabel = useMemo(()=>{
     if(!lastEventAt) return '—'
@@ -214,18 +252,22 @@ function MobileHome(){
 
   // Профит для отображения
   const profitDisplay = profitCurrency === 'USDT'
-    ? stats15.profitUSDT
-    : stats15.profitUSDT * (Number(rubRate)||DEFAULT_RUB_RATE)
+    ? stats.profitUSDT
+    : stats.profitUSDT * (Number(rubRate)||DEFAULT_RUB_RATE)
 
   const onToggleProfitCurrency = () => {
     setProfitCurrency(c => c === 'USDT' ? 'RUB' : 'USDT')
   }
+  const onToggleMetricsRange = () => {
+    setMetricsRange(r => r === 'WEEK' ? 'TODAY' : 'WEEK')
+  }
+  const subtitleRangeLabel = metricsRange === 'WEEK' ? 'за неделю' : 'за сегодня'
 
   // items for carousel
   const metricCards = [
-    { key:'wr', title:'Винрейт', subtitle:'за последние 15 ставок', value:`${stats15.winRate}%`, tone:winrateTone },
-    { key:'pf', title:'Профит', subtitle:`за последние 15 ставок`, value:`${fmt2(profitDisplay)} ${profitCurrency}`, tone:profitTone, onClick:onToggleProfitCurrency },
-    { key:'st', title:'Серия', subtitle:'за последние 15 ставок', value:`${streak.count} ${streak.kind}`, tone:(streak.kind==='побед'&&streak.count>0?'green':(streak.kind==='поражений'&&streak.count>0?'red':'neutral')) },
+    { key:'wr', title:'Винрейт', subtitle:subtitleRangeLabel, value:`${stats.winRate}%`, tone:winrateTone, onClick:onToggleMetricsRange },
+    { key:'pf', title:'Профит', subtitle:subtitleRangeLabel, value:`${fmt2(profitDisplay)} ${profitCurrency}`, tone:profitTone, onClick:onToggleProfitCurrency },
+    { key:'st', title:'Серия', subtitle:subtitleRangeLabel, value:`${streak.count} ${streak.kind}`, tone:(streak.kind==='побед'&&streak.count>0?'green':(streak.kind==='поражений'&&streak.count>0?'red':'neutral')) },
   ]
 
   return (
@@ -370,7 +412,9 @@ function BetCard({ bet, highlight=false }){
               <Detail label="Результат" value={fmtAmount(result, unit)} />
               <Detail label="ID" value={bet.id} />
             </div>
-            {bet.time && <div className="mt-2 text-[12px] opacity-90">{bet.time}</div>}
+            {bet.time !== undefined && (
+              <div className="mt-2 text-[12px] opacity-90">{String(bet.time)}</div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -388,7 +432,7 @@ function Detail({ label, value }){
 }
 
 // =====================
-// Admin page — auth + quick status + bulk JSON import + RUB rate editor
+// Admin page — auth + quick status + bulk JSON import + RUB rate editor + client clock + added_date edit
 // =====================
 function AdminPage(){
   const [password, setPassword] = useState('')
@@ -405,6 +449,22 @@ function AdminPage(){
   // rate editor
   const [rubRateInput, setRubRateInput] = useState('')
   const [rateInfo, setRateInfo] = useState('')
+
+  // client clock
+  const [clientTime, setClientTime] = useState(()=> new Date())
+  useEffect(()=>{
+    const t = setInterval(()=> setClientTime(new Date()), 1000)
+    return ()=> clearInterval(t)
+  },[])
+  const clientTimeLabel = useMemo(()=>{
+    try{
+      return clientTime.toLocaleString('ru-RU', { hour12: false })
+    }catch{ return String(clientTime) }
+  }, [clientTime])
+
+  // edit added_date
+  const [editDateId, setEditDateId] = useState('')
+  const [editDateVal, setEditDateVal] = useState('')
 
   // автологин из localStorage с проверкой пароля на сервере
   useEffect(()=>{
@@ -445,38 +505,44 @@ function AdminPage(){
     try{
       const obj = JSON.parse(jsonText)
       if(Array.isArray(obj)) throw new Error('Для добавления одной ставки вставьте объект {…}, не массив []')
+      // time НЕ трогаем
       const r = await fetch('/api/bets', { method:'POST', headers, body: JSON.stringify(obj) })
       if(!r.ok) throw new Error('Ошибка авторизации или данных')
       setError('')
+      setJsonText('')
     }catch(e){ setError(e.message) }
   }
+
   const del = async (id)=>{
     const r = await fetch(`/api/bets/${id}`, { method:'DELETE', headers })
     if(!r.ok){ setError('Ошибка авторизации'); return }
     setBets(prev => prev.filter(x => String(x.id) !== String(id)))
   }
+
   const loadToEditor = (b)=>{
     setEditingId(String(b.id))
     setJsonText(JSON.stringify(b, null, 2))
   }
+
   const savePatch = async ()=>{
     if(!editingId){ setError('Сначала выберите ставку «В редактор»'); return }
     try{
       const obj = JSON.parse(jsonText)
+      // time при редактировании тоже не меняем (на ваше усмотрение в JSON)
       const r = await fetch(`/api/bets/${editingId}`, { method:'PATCH', headers, body: JSON.stringify(obj) })
       if(!r.ok) throw new Error('Ошибка PATCH (авторизация/данные)')
       setError('')
     }catch(e){ setError(e.message) }
   }
 
-  // Быстрая смена статуса
+  // Быстрая смена статуса (точные выплаты с 2 знаками)
   const quickStatus = async (b, to) => {
     const stake = Number(b.stake_value)||0
     const coef = Number(b.coef)||0
     let patch = {}
     const currency = b.win_currency || b.stake_currency || 'USDT'
     if (to === STATUS.WON){
-      patch = { status: STATUS.WON, win_value: Math.round(stake * coef), win_currency: currency }
+      patch = { status: STATUS.WON, win_value: round2(stake * coef), win_currency: currency }
     } else if (to === STATUS.LOST){
       patch = { status: STATUS.LOST, win_value: -Math.abs(stake), win_currency: currency }
     } else {
@@ -487,7 +553,7 @@ function AdminPage(){
     if(!r.ok) setError('Ошибка PATCH (проверь пароль)')
   }
 
-  // ===== Импорт JSON (только добавление) =====
+  // Импорт JSON (только добавление)
   const onChooseFile = async (e) => {
     const file = e.target.files?.[0]
     if(!file) return
@@ -510,14 +576,15 @@ function AdminPage(){
     const coef = Number(b.coef)||0
     let win = Number(b.win_value)
     if(Number.isNaN(win) || win===undefined){
-      if(status===STATUS.WON) win = Math.round(stake*coef)
+      if(status===STATUS.WON) win = round2(stake*coef)
       else if(status===STATUS.LOST) win = -Math.abs(stake)
       else win = 0
     }
     const stake_currency = b.stake_currency || 'USDT'
     const win_currency = b.win_currency || stake_currency
+    // time из файла НЕ трогаем и не назначаем
     return {
-      time: b.time || '',
+      time: b.time,
       id: String(b.id || Date.now() + Math.random().toString(16).slice(2)),
       match: b.match || '',
       bet: b.bet || '',
@@ -533,6 +600,7 @@ function AdminPage(){
   const importAddMerge = async ()=>{
     if(!importItems.length){ setImportInfo('Сначала выберите JSON-файл'); return }
     const current = await fetch('/api/bets').then(r=>r.json())
+    // time у элементов НЕ трогаем, added_date сервер проставит для отсутствующих
     const merged = [...importItems.slice().reverse(), ...current]
     const r = await fetch('/api/bets', { method:'PUT', headers, body: JSON.stringify(merged) })
     if(!r.ok){ setImportInfo('Ошибка импорта (авторизация?)'); return }
@@ -569,11 +637,35 @@ function AdminPage(){
     }
   }
 
+  // edit added_date
+  const startEditDate = (b)=>{
+    setEditDateId(String(b.id))
+    setEditDateVal(b.added_date || '')
+  }
+  const cancelEditDate = ()=>{
+    setEditDateId('')
+    setEditDateVal('')
+  }
+  const saveEditDate = async ()=>{
+    if(!editDateId) return
+    try{
+      const patch = { added_date: editDateVal }
+      const r = await fetch(`/api/bets/${editDateId}`, { method:'PATCH', headers, body: JSON.stringify(patch) })
+      if(!r.ok){ setError('Ошибка сохранения даты добавления'); return }
+      cancelEditDate()
+    }catch{
+      setError('Сеть недоступна')
+    }
+  }
+
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
       <div className="max-w-6xl mx-auto px-6 py-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-semibold">Админ-панель</h1>
+          <div>
+            <h1 className="text-2xl font-semibold">Админ-панель</h1>
+            <div className="text-xs text-white/70 mt-1">Время клиента: {clientTimeLabel}</div>
+          </div>
           <div className="flex items-center gap-2">
             {authed && <button onClick={logout} className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/15">Выйти</button>}
             <a href="/" className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/15">← На сайт</a>
@@ -632,6 +724,7 @@ function AdminPage(){
                 </div>
               </div>
             </div>
+
             <div className="bg-white/5 rounded-2xl p-4 ring-1 ring-white/10">
               <div className="text-sm opacity-80 mb-3">Предпросмотр / Быстрая правка / Удаление</div>
               <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
@@ -647,6 +740,30 @@ function AdminPage(){
                         <button onClick={()=>del(b.id)} className="px-2 py-1 rounded-md bg-black/30 hover:bg-black/40 text-xs">Удалить</button>
                       </div>
                     </div>
+
+                    {/* Дата добавления (только админка) */}
+                    <div className="mt-2 text-xs flex items-center gap-2 flex-wrap">
+                      <span className="opacity-90">Добавлено:</span>
+                      {editDateId === String(b.id) ? (
+                        <>
+                          <input
+                            type="text"
+                            placeholder="ДД/ММ/ГГГГ"
+                            className="px-2 py-1 rounded-md bg-black/30 outline-none"
+                            value={editDateVal}
+                            onChange={e=>setEditDateVal(e.target.value)}
+                          />
+                          <button onClick={saveEditDate} className="px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-xs">Сохранить</button>
+                          <button onClick={cancelEditDate} className="px-2 py-1 rounded-md bg-black/30 hover:bg-black/40 text-xs">Отмена</button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="px-2 py-1 rounded-md bg-black/20">{b.added_date || '—'}</span>
+                          <button onClick={()=>startEditDate(b)} className="px-2 py-1 rounded-md bg-black/30 hover:bg-black/40 text-xs">Изм. дату</button>
+                        </>
+                      )}
+                    </div>
+
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button onClick={()=>quickStatus(b, STATUS.WON)} className="px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-xs">Выиграна</button>
                       <button onClick={()=>quickStatus(b, STATUS.LOST)} className="px-2 py-1 rounded-md bg-rose-600 hover:bg-rose-500 text-xs">Проиграна</button>
@@ -656,6 +773,7 @@ function AdminPage(){
                 ))}
               </div>
             </div>
+
           </div>
         )}
       </div>
