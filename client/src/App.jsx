@@ -140,19 +140,29 @@ function startOfDayMs(ms){
   const d = new Date(ms)
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
 }
-function filterBetsByRangeAddedDate(bets, range){
+function filterBetsByAddedDate(bets, period){
   const todayStr = todayDMY()
-  if (range === 'TODAY'){
-    // Только те, у кого added_date равна сегодняшней дате
+  if (period === 'DAY'){
     return bets.filter(b => (b.added_date||'').trim() === todayStr)
   }
-  // WEEK: сегодня и 6 предыдущих дней по added_date
   const todayMs = startOfDayMs(Date.now())
-  const startMs = todayMs - 6*24*60*60*1000
-  const endMs = todayMs + 24*60*60*1000 - 1
+
+  if (period === 'WEEK'){
+    const startMs = todayMs - 6*24*60*60*1000
+    const endMs = todayMs + 24*60*60*1000 - 1
+    return bets.filter(b => {
+      const t = parseDMYtoMs(b.added_date)
+      return Number.isFinite(t) && t >= startMs && t <= endMs
+    })
+  }
+
+  // MONTH: текущий календарный месяц
+  const now = new Date()
+  const startMonthMs = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
+  const startNextMonthMs = new Date(now.getFullYear(), now.getMonth()+1, 1).getTime()
   return bets.filter(b => {
     const t = parseDMYtoMs(b.added_date)
-    return Number.isFinite(t) && t >= startMs && t <= endMs
+    return Number.isFinite(t) && t >= startMonthMs && t < startNextMonthMs
   })
 }
 
@@ -171,7 +181,7 @@ function calcStats(bets, rubRate){
   return { total, winRate, profitUSDT, avgOdds, roi }
 }
 
-// === Серия (в рамках выбранного диапазона)
+// === Серия (в рамках выбранного периода)
 function calcStreak(list){
   if (!list.length) return { kind: 'нет', count: 0 }
   const firstIdx = list.findIndex(b => b.status !== STATUS.PENDING)
@@ -185,6 +195,97 @@ function calcStreak(list){
     count++
   }
   return { kind: target===STATUS.WON? 'побед' : 'поражений', count }
+}
+
+// =====================
+// Segmented control — компактный, чёрный, подчёркивание с glow под текстом
+// =====================
+function SegmentedPeriod({ value, onChange }){
+  const opts = [
+    { key: 'DAY', label: 'День' },
+    { key: 'WEEK', label: 'Неделя' },
+    { key: 'MONTH', label: 'Месяц' },
+  ]
+  const containerRef = useRef(null)
+  const labelRefs = useRef({})
+  const [underline, setUnderline] = useState({ left: 0, width: 28 })
+  const spring = { type: 'spring', stiffness: 520, damping: 38, mass: 0.7 }
+
+  const updateUnderline = () => {
+    const c = containerRef.current
+    const span = labelRefs.current[value]
+    if (!c || !span) return
+    const cr = c.getBoundingClientRect()
+    const tr = span.getBoundingClientRect()
+    const w = Math.max(22, Math.min(48, Math.round(tr.width * 0.6)))
+    const left = Math.round((tr.left - cr.left) + (tr.width - w) / 2)
+    setUnderline({ left, width: w })
+  }
+
+  useEffect(()=>{
+    const rAF = requestAnimationFrame(updateUnderline)
+    return () => cancelAnimationFrame(rAF)
+  }, [value])
+
+  useEffect(()=>{
+    const onResize = () => updateUnderline()
+    window.addEventListener('resize', onResize)
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(updateUnderline).catch(()=>{})
+    }
+    const t = setTimeout(updateUnderline, 0)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      clearTimeout(t)
+    }
+  }, [])
+
+  return (
+    <div className="sticky top-0 z-20 px-3 pt-1 pb-2 bg-gradient-to-b from-black/85 via-black/55 to-transparent backdrop-blur-md">
+      <div className="mx-auto max-w-[520px]">
+        <div
+          ref={containerRef}
+          className="relative rounded-3xl ring-1 ring-black/40 bg-black/65 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] px-2 py-1 overflow-visible"
+        >
+          {/* Glow подчеркивания */}
+          <motion.div
+            className="absolute bottom-[5px] h-[7px] rounded-full bg-emerald-400/70 blur-md"
+            style={{ left: 0, width: 0 }}
+            animate={{ left: underline.left, width: underline.width }}
+            transition={spring}
+          />
+          {/* Чёткая полоска */}
+          <motion.div
+            className="absolute bottom-[6px] h-[3px] rounded-full bg-emerald-400 shadow-[0_0_0_2px_rgba(16,185,129,0.1),0_0_14px_rgba(16,185,129,0.35)]"
+            style={{ left: 0, width: 0 }}
+            animate={{ left: underline.left, width: underline.width }}
+            transition={spring}
+          />
+          <div className="grid grid-cols-3 gap-1">
+            {opts.map((o)=> {
+              const active = value === o.key
+              return (
+                <button
+                  key={o.key}
+                  type="button"
+                  onClick={()=>onChange(o.key)}
+                  className={`relative h-10 rounded-2xl flex items-center justify-center select-none transition-colors duration-150
+                    ${active ? 'text-white' : 'text-white/75 hover:text-white/90'}`}
+                >
+                  <span
+                    ref={el => { if (el) labelRefs.current[o.key] = el }}
+                    className="text-[15px] font-semibold tracking-tight"
+                  >
+                    {o.label}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // =====================
@@ -202,8 +303,14 @@ function MobileHome(){
   const [rubRate, setRubRate] = useState(DEFAULT_RUB_RATE)
   const [profitCurrency, setProfitCurrency] = useState('USDT') // 'USDT' | 'RUB'
 
-  // диапазон метрик: WEEK (дефолт) / TODAY (по тапу на Винрейт)
-  const [metricsRange, setMetricsRange] = useState('WEEK') // 'WEEK' | 'TODAY'
+  // период метрик и списка
+  const [period, setPeriod] = useState(()=>{
+    const s = localStorage.getItem('betoff_period')
+    return s === 'WEEK' || s === 'MONTH' ? s : 'DAY'
+  })
+  useEffect(()=>{
+    try{ localStorage.setItem('betoff_period', period) }catch{}
+  }, [period])
 
   // сокет для курса
   useEffect(()=>{
@@ -234,10 +341,12 @@ function MobileHome(){
   }, [lastEventAt])
 
   // вычисления по added_date
-  const filtered = useMemo(()=> filterBetsByRangeAddedDate(bets, metricsRange), [bets, metricsRange])
+  const filtered = useMemo(()=> filterBetsByAddedDate(bets, period), [bets, period])
   const stats = useMemo(()=> calcStats(filtered, rubRate), [filtered, rubRate])
   const streak = useMemo(()=> calcStreak(filtered), [filtered])
-  const visible = useMemo(()=> bets.slice(0, limit), [bets, limit])
+
+  // постраничность списка — по отфильтрованным данным
+  const visible = useMemo(()=> filtered.slice(0, limit), [filtered, limit])
 
   const winrateTone = stats.winRate > 50 ? 'green' : 'red'
   const profitTone = stats.profitUSDT > 0 ? 'green' : (stats.profitUSDT < 0 ? 'red' : 'neutral')
@@ -258,16 +367,12 @@ function MobileHome(){
   const onToggleProfitCurrency = () => {
     setProfitCurrency(c => c === 'USDT' ? 'RUB' : 'USDT')
   }
-  const onToggleMetricsRange = () => {
-    setMetricsRange(r => r === 'WEEK' ? 'TODAY' : 'WEEK')
-  }
-  const subtitleRangeLabel = metricsRange === 'WEEK' ? 'за неделю' : 'за сегодня'
 
-  // items for carousel
+  // items for carousel — новые заголовки и оформление
   const metricCards = [
-    { key:'wr', title:'Винрейт', subtitle:subtitleRangeLabel, value:`${stats.winRate}%`, tone:winrateTone, onClick:onToggleMetricsRange },
-    { key:'pf', title:'Профит', subtitle:subtitleRangeLabel, value:`${fmt2(profitDisplay)} ${profitCurrency}`, tone:profitTone, onClick:onToggleProfitCurrency },
-    { key:'st', title:'Серия', subtitle:subtitleRangeLabel, value:`${streak.count} ${streak.kind}`, tone:(streak.kind==='побед'&&streak.count>0?'green':(streak.kind==='поражений'&&streak.count>0?'red':'neutral')) },
+    { key:'wr', title:'ВИНРЕЙТ', value:`${stats.winRate}%`, tone:winrateTone },
+    { key:'pf', title:'ПРИБЫЛЬ', value:`${fmt2(profitDisplay)} ${profitCurrency}`, tone:profitTone, onClick:onToggleProfitCurrency },
+    { key:'st', title:'СЕРИЯ', value:`${streak.count} ${streak.kind}`, tone:(streak.kind==='побед'&&streak.count>0?'green':(streak.kind==='поражений'&&streak.count>0?'red':'neutral')) },
   ]
 
   return (
@@ -310,13 +415,16 @@ function MobileHome(){
             <div className="flex gap-3 px-3">
               {metricCards.map((c)=> (
                 <div key={c.key} className="shrink-0 snap-center">
-                  <SummaryCard title={c.title} subtitle={c.subtitle} value={c.value} tone={c.tone} onClick={c.onClick} />
+                  <SummaryCard title={c.title} value={c.value} tone={c.tone} onClick={c.onClick} />
                 </div>
               ))}
             </div>
           </div>
         </motion.div>
       </div>
+
+      {/* Segmented control (липкий под метриками) */}
+      <SegmentedPeriod value={period} onChange={setPeriod} />
 
       {/* Тост «Данные обновлены» */}
       <AnimatePresence>
@@ -330,10 +438,10 @@ function MobileHome(){
         )}
       </AnimatePresence>
 
-      {/* List (newest first) */}
+      {/* List (filtered, newest first by current order) */}
       <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
         {visible.map(b=> <BetCard key={b.id} bet={b} highlight={highlightId===b.id} />)}
-        {visible.length < bets.length && (
+        {visible.length < filtered.length && (
           <button onClick={()=>setLimit(l=>l+20)} className="w-full mt-1 mb-6 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-sm">Показать ещё</button>
         )}
       </div>
@@ -354,7 +462,10 @@ function LiveDot({ on }){
   )
 }
 
-function SummaryCard({ title, subtitle, value, tone='neutral', onClick }){
+// =====================
+// Summary card — центровка, большие верхние заголовки и броские значения
+// =====================
+function SummaryCard({ title, value, tone='neutral', onClick }){
   const toneClasses = tone==='green'
     ? 'ring-emerald-500/40 bg-emerald-500/10'
     : tone==='red'
@@ -365,11 +476,12 @@ function SummaryCard({ title, subtitle, value, tone='neutral', onClick }){
     <button
       type="button"
       onClick={onClick}
-      className={`inline-flex flex-col items-start rounded-2xl ${toneClasses} px-3 py-2 backdrop-blur-md min-w-[140px] max-w-[92vw] text-left ${onClick? 'cursor-pointer':'cursor-default'}`}
+      className={`inline-flex flex-col items-center justify-center rounded-2xl ${toneClasses} px-4 py-3 backdrop-blur-md min-w-[150px] max-w-[92vw] text-center ${onClick? 'cursor-pointer':'cursor-default'}`}
     >
-      <div className="text-[11px] font-semibold leading-tight">{title}</div>
-      <div className="text-[9px] uppercase tracking-wide text-white/70 leading-tight">{subtitle}</div>
-      <div className="text-lg font-semibold mt-1 whitespace-nowrap">{value}</div>
+      <div className="text-[13px] font-extrabold leading-none uppercase tracking-wide">{title}</div>
+      <div className="mt-1 text-2xl font-extrabold leading-none text-white drop-shadow-[0_2px_10px_rgba(0,0,0,0.25)]">
+        {value}
+      </div>
     </button>
   )
 }
@@ -432,7 +544,7 @@ function Detail({ label, value }){
 }
 
 // =====================
-// Admin page — auth + quick status + bulk JSON import + RUB rate editor + client clock + added_date edit
+// Admin page — как в предыдущей версии
 // =====================
 function AdminPage(){
   const [password, setPassword] = useState('')
@@ -505,7 +617,6 @@ function AdminPage(){
     try{
       const obj = JSON.parse(jsonText)
       if(Array.isArray(obj)) throw new Error('Для добавления одной ставки вставьте объект {…}, не массив []')
-      // time НЕ трогаем
       const r = await fetch('/api/bets', { method:'POST', headers, body: JSON.stringify(obj) })
       if(!r.ok) throw new Error('Ошибка авторизации или данных')
       setError('')
@@ -528,14 +639,12 @@ function AdminPage(){
     if(!editingId){ setError('Сначала выберите ставку «В редактор»'); return }
     try{
       const obj = JSON.parse(jsonText)
-      // time при редактировании тоже не меняем (на ваше усмотрение в JSON)
       const r = await fetch(`/api/bets/${editingId}`, { method:'PATCH', headers, body: JSON.stringify(obj) })
       if(!r.ok) throw new Error('Ошибка PATCH (авторизация/данные)')
       setError('')
     }catch(e){ setError(e.message) }
   }
 
-  // Быстрая смена статуса (точные выплаты с 2 знаками)
   const quickStatus = async (b, to) => {
     const stake = Number(b.stake_value)||0
     const coef = Number(b.coef)||0
@@ -553,7 +662,6 @@ function AdminPage(){
     if(!r.ok) setError('Ошибка PATCH (проверь пароль)')
   }
 
-  // Импорт JSON (только добавление)
   const onChooseFile = async (e) => {
     const file = e.target.files?.[0]
     if(!file) return
@@ -582,7 +690,6 @@ function AdminPage(){
     }
     const stake_currency = b.stake_currency || 'USDT'
     const win_currency = b.win_currency || stake_currency
-    // time из файла НЕ трогаем и не назначаем
     return {
       time: b.time,
       id: String(b.id || Date.now() + Math.random().toString(16).slice(2)),
@@ -600,7 +707,6 @@ function AdminPage(){
   const importAddMerge = async ()=>{
     if(!importItems.length){ setImportInfo('Сначала выберите JSON-файл'); return }
     const current = await fetch('/api/bets').then(r=>r.json())
-    // time у элементов НЕ трогаем, added_date сервер проставит для отсутствующих
     const merged = [...importItems.slice().reverse(), ...current]
     const r = await fetch('/api/bets', { method:'PUT', headers, body: JSON.stringify(merged) })
     if(!r.ok){ setImportInfo('Ошибка импорта (авторизация?)'); return }
@@ -637,7 +743,6 @@ function AdminPage(){
     }
   }
 
-  // edit added_date
   const startEditDate = (b)=>{
     setEditDateId(String(b.id))
     setEditDateVal(b.added_date || '')
