@@ -11,7 +11,8 @@ const statusColor = (s) => s===STATUS.WON? 'bg-emerald-600' : s===STATUS.LOST? '
 // формат чисел до 2 знаков
 const nf2 = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 const fmt2 = (n) => nf2.format(Number(n) || 0)
-const currency = (v) => `${fmt2(v)} рублей`
+// Отображаем суммы в USDT
+const currency = (v) => `${fmt2(v)} USDT`
 
 // Нормализуем результат ставки (чистый профит)
 function normalizedWinValue(b){
@@ -186,7 +187,7 @@ function MobileHome(){
   // items for carousel
   const metricCards = [
     { key:'wr', title:'Винрейт', subtitle:'за последние 15 ставок', value:`${stats15.winRate}%`, tone:winrateTone },
-    { key:'pf', title:'Профит', subtitle:'за последние 15 ставок', value:`${fmt2(stats15.profit)} рублей`, tone:profitTone },
+    { key:'pf', title:'Профит', subtitle:'за последние 15 ставок', value:`${fmt2(stats15.profit)} USDT`, tone:profitTone },
     { key:'st', title:'Серия', subtitle:'за последние 15 ставок', value:`${streak.count} ${streak.kind}`, tone:(streak.kind==='побед'&&streak.count>0?'green':(streak.kind==='поражений'&&streak.count>0?'red':'neutral')) },
   ]
 
@@ -426,13 +427,13 @@ function AdminPage(){
     const coef = Number(b.coef)||0
     let patch = {}
     if (to === STATUS.WON){
-      patch = { status: STATUS.WON, win_value: Math.round(stake * coef), win_currency: b.win_currency || 'RUB' }
+      patch = { status: STATUS.WON, win_value: Math.round(stake * coef), win_currency: b.win_currency || 'USDT' }
     } else if (to === STATUS.LOST){
-      patch = { status: STATUS.LOST, win_value: -Math.abs(stake), win_currency: b.win_currency || 'RUB' }
+      patch = { status: STATUS.LOST, win_value: -Math.abs(stake), win_currency: b.win_currency || 'USDT' }
     } else {
-      patch = { status: STATUS.PENDING, win_value: 0, win_currency: b.win_currency || 'RUB' }
+      patch = { status: STATUS.PENDING, win_value: 0, win_currency: b.win_currency || 'USDT' }
     }
-    if(!b.stake_currency) patch.stake_currency = 'RUB'
+    if(!b.stake_currency) patch.stake_currency = 'USDT'
     const r = await fetch(`/api/bets/${b.id}`, { method:'PATCH', headers, body: JSON.stringify(patch) })
     if(!r.ok) setError('Ошибка PATCH (проверь пароль)')
   }
@@ -471,10 +472,10 @@ function AdminPage(){
       bet: b.bet || '',
       status,
       stake_value: stake,
-      stake_currency: b.stake_currency || 'RUB',
+      stake_currency: b.stake_currency || 'USDT',
       coef: coef,
       win_value: win,
-      win_currency: b.win_currency || 'RUB'
+      win_currency: b.win_currency || 'USDT'
     }
   }
 
