@@ -11,8 +11,16 @@ const statusColor = (s) => s===STATUS.WON? 'bg-emerald-600' : s===STATUS.LOST? '
 // формат чисел до 2 знаков
 const nf2 = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 const fmt2 = (n) => nf2.format(Number(n) || 0)
-// Отображаем суммы в USDT
-const currency = (v) => `${fmt2(v)} USDT`
+
+// Хелперы валют
+const getRubRate = () => {
+  try {
+    const v = Number(localStorage.getItem('betoff_rub_rate'))
+    return v > 0 ? v : 80.78
+  } catch { return 80.78 }
+}
+const fmtAmount = (v, unit='USDT') => `${fmt2(v)} ${unit}`
+const betUnit = (b) => (b.stake_currency || b.win_currency || 'USDT')
 
 // Нормализуем результат ставки (чистый профит)
 function normalizedWinValue(b){
@@ -29,6 +37,12 @@ function normalizedWinValue(b){
   }
   // Выигрыш — чистый профит = выплата - ставка
   return (win - stake)
+}
+
+const toUSDT = (amount, b, rubRate) => {
+  const unit = betUnit(b)
+  if (unit === 'RUB') return amount / (Number(rubRate) || 80.78)
+  return amount
 }
 
 // =====================
@@ -107,18 +121,21 @@ function useRealtimeBets(){
   return { bets, setBets, connected, lastEventAt }
 }
 
-// === Статы: исключаем НЕРАСЧИТАННЫЕ из винрейта и профита ===
-function calcStats(bets){
+// === Статы (в USDT): исключаем НЕРАСЧИТАННЫЕ из винрейта и профита ===
+function calcStats(bets, rubRate){
   const eligible = bets.filter(b => b.status !== STATUS.PENDING)
   const total = eligible.length
   const won = eligible.filter(b=>b.status===STATUS.WON).length
   const winRate = total? Math.round(won/total*100):0
 
-  const profit = eligible.reduce((a,b)=> a + normalizedWinValue(b), 0)
-  const sumStakes = eligible.reduce((a,b)=> a + (Number(b.stake_value)||0), 0)
-  const roi = sumStakes? ((profit / sumStakes) * 100).toFixed(1) : '0.0'
+  // Профит агрегируем в USDT: RUB-конверсия через RESULT / КУРС
+  const profitUSDT = eligible.reduce((a,b)=> a + toUSDT(normalizedWinValue(b), b, rubRate), 0)
+  // Ставки тоже в USDT для корректного ROI
+  const sumStakesUSDT = eligible.reduce((a,b)=> a + toUSDT(Number(b.stake_value)||0, b, rubRate), 0)
+
+  const roi = sumStakesUSDT? ((profitUSDT / sumStakesUSDT) * 100).toFixed(1) : '0.0'
   const avgOdds = total? (eligible.reduce((a,b)=> a+(Number(b.coef)||0),0)/total).toFixed(2):0
-  return { total, winRate, profit, avgOdds, roi }
+  return { total, winRate, profitUSDT, avgOdds, roi }
 }
 
 // === Серия: ищем первую НЕ нерасчитанную и считаем подряд ===
@@ -145,11 +162,27 @@ function MobileHome(){
   const [limit, setLimit] = useState(20)
   const [flash, setFlash] = useState(false)
   const [highlightId, setHighlightId] = useState('')
+  const [rubRate, setRubRate] = useState(getRubRate)
+  const [profitCurrency, setProfitCurrency] = useState('USDT') // 'USDT' | 'RUB'
   const listRef = useRef(null)
   const prevFirstId = useRef('')
 
   // summary carousel state
   const scrollerRef = useRef(null)
+
+  // слушаем изменение курса (если поменяли в админке)
+  useEffect(()=>{
+    const onStorage = (e) => {
+      if(e.key === 'betoff_rub_rate') setRubRate(getRubRate())
+    }
+    const onCustom = () => setRubRate(getRubRate())
+    window.addEventListener('storage', onStorage)
+    window.addEventListener('betoff_rub_rate_changed', onCustom)
+    return () => {
+      window.removeEventListener('storage', onStorage)
+      window.removeEventListener('betoff_rub_rate_changed', onCustom)
+    }
+  },[])
 
   // короткая вспышка при любом апдейте + подсветка и автоскролл при добавлении новой первой
   useEffect(()=>{
@@ -169,12 +202,12 @@ function MobileHome(){
 
   // вычисления
   const last15 = useMemo(()=> bets.slice(0, 15), [bets])
-  const stats15 = useMemo(()=> calcStats(last15), [last15])
+  const stats15 = useMemo(()=> calcStats(last15, rubRate), [last15, rubRate])
   const streak = useMemo(()=> calcStreak(bets), [bets])
   const visible = useMemo(()=> bets.slice(0, limit), [bets, limit])
 
   const winrateTone = stats15.winRate > 50 ? 'green' : 'red'
-  const profitTone = stats15.profit > 0 ? 'green' : (stats15.profit < 0 ? 'red' : 'neutral')
+  const profitTone = stats15.profitUSDT > 0 ? 'green' : (stats15.profitUSDT < 0 ? 'red' : 'neutral')
 
   const dateLabel = useMemo(()=>{
     if(!lastEventAt) return '—'
@@ -184,10 +217,19 @@ function MobileHome(){
     try{ return new Date(Number(lastEventAt)).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }) }catch{ return 'недавно' }
   }, [lastEventAt])
 
+  // Профит для отображения в выбранной валюте
+  const profitDisplay = profitCurrency === 'USDT'
+    ? stats15.profitUSDT
+    : stats15.profitUSDT * (Number(rubRate)||80.78)
+
+  const onToggleProfitCurrency = () => {
+    setProfitCurrency(c => c === 'USDT' ? 'RUB' : 'USDT')
+  }
+
   // items for carousel
   const metricCards = [
     { key:'wr', title:'Винрейт', subtitle:'за последние 15 ставок', value:`${stats15.winRate}%`, tone:winrateTone },
-    { key:'pf', title:'Профит', subtitle:'за последние 15 ставок', value:`${fmt2(stats15.profit)} USDT`, tone:profitTone },
+    { key:'pf', title:'Профит', subtitle:`за последние 15 ставок`, value:`${fmt2(profitDisplay)} ${profitCurrency}`, tone:profitTone, onClick:onToggleProfitCurrency },
     { key:'st', title:'Серия', subtitle:'за последние 15 ставок', value:`${streak.count} ${streak.kind}`, tone:(streak.kind==='побед'&&streak.count>0?'green':(streak.kind==='поражений'&&streak.count>0?'red':'neutral')) },
   ]
 
@@ -221,7 +263,7 @@ function MobileHome(){
         />
       </div>
 
-      {/* Summary — горизонтальный слайдер, КОМПАКТНЫЕ карточки контентной ширины */}
+      {/* Summary — горизонтальный слайдер */}
       <div className="px-0 mb-1">
         <motion.div
           className="relative"
@@ -232,7 +274,7 @@ function MobileHome(){
             <div className="flex gap-3 px-3">
               {metricCards.map((c)=> (
                 <div key={c.key} className="shrink-0 snap-center">
-                  <SummaryCard title={c.title} subtitle={c.subtitle} value={c.value} tone={c.tone} />
+                  <SummaryCard title={c.title} subtitle={c.subtitle} value={c.value} tone={c.tone} onClick={c.onClick} />
                 </div>
               ))}
             </div>
@@ -276,20 +318,25 @@ function LiveDot({ on }){
   )
 }
 
-function SummaryCard({ title, subtitle, value, tone='neutral' }){
+function SummaryCard({ title, subtitle, value, tone='neutral', onClick }){
   const toneClasses = tone==='green'
     ? 'ring-emerald-500/40 bg-emerald-500/10'
     : tone==='red'
       ? 'ring-rose-500/40 bg-rose-500/10'
       : 'ring-white/10 bg-white/5'
 
-  // Карточка контентной ширины (минимум 140px), не растягиваем на всю
+  // Карточка контентной ширины (минимум 140px)
   return (
-    <div className={`inline-flex flex-col items-start rounded-2xl ${toneClasses} px-3 py-2 backdrop-blur-md min-w-[140px] max-w-[92vw]`}>
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex flex-col items-start rounded-2xl ${toneClasses} px-3 py-2 backdrop-blur-md min-w-[140px] max-w-[92vw] text-left ${onClick? 'cursor-pointer':'cursor-default'}`}
+    >
       <div className="text-[11px] font-semibold leading-tight">{title}</div>
       <div className="text-[9px] uppercase tracking-wide text-white/70 leading-tight">{subtitle}</div>
       <div className="text-lg font-semibold mt-1 whitespace-nowrap">{value}</div>
-    </div>
+      {onClick && <div className="text-[9px] mt-1 opacity-70">тап для смены валюты</div>}
+    </button>
   )
 }
 
@@ -298,6 +345,8 @@ function BetCard({ bet, highlight=false }){
   const bg = statusColor(bet.status)
   const result = normalizedWinValue(bet)
   const positive = result > 0
+  const unit = betUnit(bet)
+
   return (
     <motion.div
       layout
@@ -314,7 +363,7 @@ function BetCard({ bet, highlight=false }){
         </div>
         <div className="text-right shrink-0">
           <div className="text-sm font-semibold">{bet.coef}</div>
-          <div className="text-xs opacity-90">{positive? `+${currency(result)}`: `${currency(result)}`}</div>
+          <div className="text-xs opacity-90">{positive? `+${fmtAmount(result, unit)}`: `${fmtAmount(result, unit)}`}</div>
         </div>
       </div>
 
@@ -324,9 +373,9 @@ function BetCard({ bet, highlight=false }){
           <motion.div key="x" initial={{height:0, opacity:0}} animate={{height:'auto', opacity:1}} exit={{height:0, opacity:0}} transition={{duration:0.2}} className="overflow-hidden">
             <div className="mt-3 text-[12px] font-semibold">Статус: {bet.status}</div>
             <div className="mt-2 grid grid-cols-2 gap-2 text-[13px]">
-              <Detail label="Ставка" value={currency(bet.stake_value)} />
+              <Detail label="Ставка" value={fmtAmount(bet.stake_value, unit)} />
               <Detail label="Коэффициент" value={bet.coef} />
-              <Detail label="Результат" value={currency(result)} />
+              <Detail label="Результат" value={fmtAmount(result, unit)} />
               <Detail label="ID" value={bet.id} />
             </div>
             {bet.time && <div className="mt-2 text-[12px] opacity-90">{bet.time}</div>}
@@ -347,7 +396,7 @@ function Detail({ label, value }){
 }
 
 // =====================
-// Admin page — persistent auth + quick status + bulk JSON import
+// Admin page — persistent auth + quick status + bulk JSON import + RUB rate editor
 // =====================
 function AdminPage(){
   const [password, setPassword] = useState('')
@@ -360,6 +409,10 @@ function AdminPage(){
   // импорт JSON
   const [importItems, setImportItems] = useState([])
   const [importInfo, setImportInfo] = useState('')
+
+  // RUB rate editor
+  const [rubRateInput, setRubRateInput] = useState(() => String(getRubRate()))
+  const [rateInfo, setRateInfo] = useState('')
 
   // автологин из localStorage с проверкой пароля на сервере
   useEffect(()=>{
@@ -427,11 +480,11 @@ function AdminPage(){
     const coef = Number(b.coef)||0
     let patch = {}
     if (to === STATUS.WON){
-      patch = { status: STATUS.WON, win_value: Math.round(stake * coef), win_currency: b.win_currency || 'USDT' }
+      patch = { status: STATUS.WON, win_value: Math.round(stake * coef), win_currency: b.win_currency || b.stake_currency || 'USDT' }
     } else if (to === STATUS.LOST){
-      patch = { status: STATUS.LOST, win_value: -Math.abs(stake), win_currency: b.win_currency || 'USDT' }
+      patch = { status: STATUS.LOST, win_value: -Math.abs(stake), win_currency: b.win_currency || b.stake_currency || 'USDT' }
     } else {
-      patch = { status: STATUS.PENDING, win_value: 0, win_currency: b.win_currency || 'USDT' }
+      patch = { status: STATUS.PENDING, win_value: 0, win_currency: b.win_currency || b.stake_currency || 'USDT' }
     }
     if(!b.stake_currency) patch.stake_currency = 'USDT'
     const r = await fetch(`/api/bets/${b.id}`, { method:'PATCH', headers, body: JSON.stringify(patch) })
@@ -465,6 +518,8 @@ function AdminPage(){
       else if(status===STATUS.LOST) win = -Math.abs(stake)
       else win = 0
     }
+    const stake_currency = b.stake_currency || 'USDT'
+    const win_currency = b.win_currency || stake_currency
     return {
       time: b.time || '',
       id: String(b.id || Date.now() + Math.random().toString(16).slice(2)),
@@ -472,10 +527,10 @@ function AdminPage(){
       bet: b.bet || '',
       status,
       stake_value: stake,
-      stake_currency: b.stake_currency || 'USDT',
+      stake_currency,
       coef: coef,
       win_value: win,
-      win_currency: b.win_currency || 'USDT'
+      win_currency
     }
   }
 
@@ -500,6 +555,23 @@ function AdminPage(){
     return ()=> socket.disconnect()
   },[editingId])
 
+  const saveRubRate = ()=>{
+    const val = Number(rubRateInput)
+    if(!isFinite(val) || val <= 0){
+      setRateInfo('Введите корректный курс (> 0)')
+      return
+    }
+    try{
+      localStorage.setItem('betoff_rub_rate', String(val))
+      setRateInfo('Курс сохранён')
+      // уведомим другие части SPA
+      window.dispatchEvent(new Event('betoff_rub_rate_changed'))
+      setTimeout(()=> setRateInfo(''), 1500)
+    }catch{
+      setRateInfo('Не удалось сохранить курс')
+    }
+  }
+
   return (
     <div className="min-h-screen bg-neutral-950 text-white">
       <div className="max-w-6xl mx-auto px-6 py-6">
@@ -510,6 +582,30 @@ function AdminPage(){
             <a href="/" className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/15">← На сайт</a>
           </div>
         </div>
+
+        {authed && (
+          <div className="mt-4">
+            <div className="bg-white/5 rounded-2xl p-4 ring-1 ring-white/10 max-w-sm">
+              <div className="text-sm font-semibold">Курс RUB/USDT</div>
+              <div className="text-xs opacity-80 mt-1">Используется для конвертации профита RUB → USDT и отображения профита в RUB</div>
+              <div className="mt-3 flex items-center gap-2">
+                <span className="text-sm whitespace-nowrap">1 USDT =</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  className="w-28 bg-black/40 rounded-lg p-2 outline-none"
+                  value={rubRateInput}
+                  onChange={(e)=>setRubRateInput(e.target.value)}
+                />
+                <span className="text-sm">RUB</span>
+              </div>
+              {rateInfo && <div className="text-xs mt-2 opacity-85">{rateInfo}</div>}
+              <div className="mt-3">
+                <button onClick={saveRubRate} className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm">Сохранить курс</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {!authed ? (
           <form onSubmit={login} className="mt-6 max-w-md bg-white/5 p-4 rounded-2xl ring-1 ring-white/10">
